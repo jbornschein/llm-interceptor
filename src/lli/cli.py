@@ -1,8 +1,7 @@
 """
 Command-line interface for LLM Interceptor.
 
-Provides the `lli` command with subcommands for watch,
-merge, split, config, and stats.
+Provides the `lli` command with subcommands for watch and config.
 """
 
 from __future__ import annotations
@@ -22,16 +21,13 @@ from rich.table import Table
 
 from lli import __version__
 from lli.config import get_cert_info, get_default_trace_dir, load_config
-from lli.net import detect_primary_ipv4, reachable_host_for_listen_host
+from lli.net import reachable_host_for_listen_host
 
 if TYPE_CHECKING:
     from lli.config import LLIConfig
     from lli.watch import WatchManager
 
 from lli.logger import get_console, setup_logger
-from lli.merger import merge_streams
-from lli.splitter import split_records
-from lli.storage import count_records
 
 # Use the shared console from logger module for coordinated output
 # This ensures proper coordination between Live displays and logging
@@ -50,132 +46,15 @@ console = get_console()
 @click.pass_context
 def main(ctx: click.Context, config_path: str | None) -> None:
     """
-    LLM Interceptor (LLI) - MITM Proxy for LLM Traffic Analysis.
+    LLM Interceptor (LLI) - Long-running service for LLM traffic analysis.
 
-    Intercept, analyze, and log communications between AI coding tools/agents
-    and their backend LLM APIs.
+    A background service that intercepts, analyzes, and logs communications
+    between AI coding tools/agents and their backend LLM APIs.
     """
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config_path
 
 
-@main.command()
-@click.option(
-    "--input",
-    "-i",
-    "input_file",
-    type=click.Path(exists=True),
-    required=True,
-    help="Input JSONL file with raw streaming chunks",
-)
-@click.option(
-    "--output",
-    "-o",
-    "output_file",
-    type=click.Path(),
-    required=True,
-    help="Output JSONL file for merged records",
-)
-def merge(input_file: str, output_file: str) -> None:
-    """
-    Merge streaming response chunks into complete records.
-
-    Reads a JSONL file containing raw streaming chunks and produces
-    a new file with complete request-response pairs.
-
-    Example:
-
-        lli merge --input raw_trace.jsonl --output merged.jsonl
-    """
-    setup_logger("INFO")
-
-    console.print(f"[cyan]Merging:[/] {input_file} → {output_file}")
-
-    try:
-        stats = merge_streams(input_file, output_file)
-
-        # Display results
-        table = Table(title="Merge Statistics", show_header=False)
-        table.add_column("Metric", style="cyan")
-        table.add_column("Value", style="green")
-
-        table.add_row("Total Requests", str(stats["total_requests"]))
-        table.add_row("Streaming Requests", str(stats["streaming_requests"]))
-        table.add_row("Non-Streaming Requests", str(stats["non_streaming_requests"]))
-        table.add_row("Incomplete Requests", str(stats["incomplete_requests"]))
-        table.add_row("Total Chunks Processed", str(stats["total_chunks_processed"]))
-
-        console.print()
-        console.print(table)
-        console.print(f"\n[green]✓ Output saved to:[/] {output_file}")
-
-    except FileNotFoundError:
-        console.print(f"[red]Error:[/] Input file not found: {input_file}")
-        sys.exit(1)
-    except Exception as e:
-        console.print(f"[red]Error:[/] {e}")
-        sys.exit(1)
-
-
-@main.command()
-@click.option(
-    "--input",
-    "-i",
-    "input_file",
-    type=click.Path(exists=True),
-    required=True,
-    help="Input merged JSONL file",
-)
-@click.option(
-    "--output-dir",
-    "-o",
-    "output_dir",
-    type=click.Path(),
-    default="./split_output",
-    help="Output directory for split files (default: ./split_output)",
-)
-def split(input_file: str, output_dir: str) -> None:
-    """
-    Split merged JSONL into individual JSON files for analysis.
-
-    Reads a merged JSONL file and produces individual JSON files
-    for each request and response record.
-
-    Output files are named: {index:03d}_{type}_{timestamp}.json
-    Example files: 001_request_2025-11-26_14-12-47.json
-                   001_response_2025-11-26_14-12-47.json
-
-    Example:
-
-        lli split --input merged.jsonl --output-dir ./analysis
-    """
-    setup_logger("INFO")
-
-    console.print(f"[cyan]Splitting:[/] {input_file} → {output_dir}/")
-
-    try:
-        stats = split_records(input_file, output_dir)
-
-        # Display results
-        table = Table(title="Split Statistics", show_header=False)
-        table.add_column("Metric", style="cyan")
-        table.add_column("Value", style="green")
-
-        table.add_row("Total Records", str(stats["total_records"]))
-        table.add_row("Request Files", str(stats["request_files"]))
-        table.add_row("Response Files", str(stats["response_files"]))
-        table.add_row("Errors", str(stats["errors"]))
-
-        console.print()
-        console.print(table)
-        console.print(f"\n[green]✓ Output saved to:[/] {output_dir}/")
-
-    except FileNotFoundError:
-        console.print(f"[red]Error:[/] Input file not found: {input_file}")
-        sys.exit(1)
-    except Exception as e:
-        console.print(f"[red]Error:[/] {e}")
-        sys.exit(1)
 
 
 @main.command()
@@ -225,6 +104,219 @@ def config(
         _show_proxy_help()
 
 
+
+@main.command()
+@click.option(
+    "--proxy-host",
+    "-ph",
+    default="127.0.0.1",
+    show_default=True,
+    help="Proxy server host/interface (use 0.0.0.0 to listen on all interfaces)",
+)
+@click.option(
+    "--proxy-port",
+    "-pp",
+    "--port",
+    "-p",
+    type=int,
+    default=9090,
+    show_default=True,
+    help="Proxy server port (default: 9090)",
+)
+@click.option(
+    "--output-dir",
+    "--log-dir",
+    "-o",
+    "output_dir",
+    type=click.Path(),
+    help="Root output directory (default: ./traces or OS-specific logs dir)",
+)
+@click.option(
+    "--include",
+    "-i",
+    multiple=True,
+    help="Additional URL patterns to include (glob pattern, e.g. '*api.example.com*')",
+)
+@click.option(
+    "--exclude",
+    "-x",
+    multiple=True,
+    help=(
+        "URL patterns to exclude (glob). Excluded URLs won't be captured and will also be "
+        "bypassed via mitmproxy ignore_hosts (best-effort)."
+    ),
+)
+@click.option(
+    "--debug",
+    is_flag=True,
+    help="Enable debug mode with verbose logging",
+)
+@click.option(
+    "--no-ui",
+    is_flag=True,
+    default=False,
+    help="Disable the web UI server (default: False)",
+)
+@click.option(
+    "--ui-host",
+    default="127.0.0.1",
+    show_default=True,
+    help="Web UI host interface (use 0.0.0.0 to expose on the network)",
+)
+@click.option(
+    "--ui-port",
+    default=8000,
+    show_default=True,
+    type=int,
+    help="Web UI port",
+)
+@click.option(
+    "--upstream-ca-cert",
+    type=click.Path(exists=False),
+    default=None,
+    help="Path to PEM or CA bundle for trusting upstream (e.g. corporate proxy) certificates",
+)
+@click.pass_context
+def watch(
+    ctx: click.Context,
+    proxy_host: str,
+    proxy_port: int,
+    output_dir: str,
+    include: tuple[str, ...],
+    exclude: tuple[str, ...],
+    debug: bool,
+    no_ui: bool,
+    ui_host: str,
+    ui_port: int,
+    upstream_ca_cert: str | None,
+) -> None:
+    """
+    Start the long-running service for continuous session capture.
+
+    This starts a background proxy service that automatically manages
+    sessions, routing traffic by client identity and message continuity.
+    Sessions persist and update in real-time as traffic flows.
+
+    Examples:
+
+        lli watch
+
+        lli watch --proxy-port 8888 --output-dir ./my_traces
+
+        lli watch --proxy-host 0.0.0.0 --proxy-port 9090
+
+        lli watch --ui-host 0.0.0.0 --ui-port 8080
+
+        lli watch --include "*my-custom-api.com*"
+
+        lli watch --exclude "*example.com/health*" --exclude "*example.com/metrics*"
+
+        lli watch --upstream-ca-cert /path/to/corporate-ca.pem
+
+        lli watch --no-ui
+
+    Configure your target application to use this proxy (replace the host/port as needed):
+
+        export HTTP_PROXY=http://127.0.0.1:9090
+
+        export HTTPS_PROXY=http://127.0.0.1:9090
+
+        export NODE_EXTRA_CA_CERTS=~/.mitmproxy/mitmproxy-ca-cert.pem
+    """
+    from lli.session_router import SessionRouter
+    from lli.exchange_assembler import ExchangeAssembler
+
+    # Load configuration
+    config = load_config(ctx.obj.get("config_path"))
+
+    # CLI override for proxy host (explicit --proxy-host overrides config/env)
+    if proxy_host != "127.0.0.1":
+        config.proxy.host = proxy_host
+
+    # CLI override for proxy port (explicit --proxy-port overrides config/env)
+    if proxy_port != 9090:
+        config.proxy.port = proxy_port
+
+    # CLI override for upstream CA cert (explicit --upstream-ca-cert overrides config/env)
+    if upstream_ca_cert is not None:
+        config.proxy.upstream_ca_cert = upstream_ca_cert
+
+    # Add custom glob patterns (user-provided via CLI)
+    for pattern in include:
+        config.filter.include_globs.append(pattern)
+
+    # Exclude patterns provided via CLI:
+    # - Always exclude from capture (filter.exclude_globs)
+    # - Also bypass interception via mitmproxy ignore_hosts (proxy.no_proxy)
+    #   so these requests don't get MITM'd.
+    for pattern in exclude:
+        config.filter.exclude_globs.append(pattern)
+        config.proxy.no_proxy = config.proxy.no_proxy or []
+        config.proxy.no_proxy.append(_glob_to_regex(pattern))
+
+    if debug:
+        config.logging.level = "DEBUG"
+
+    # Determine output directory
+    if output_dir is None:
+        output_dir = str(get_default_trace_dir())
+
+    # Setup logging
+    setup_logger(config.logging.level, config.logging.log_file)
+
+    # Check certificate
+    cert_info = get_cert_info()
+    if not cert_info["exists"]:
+        console.print(
+            "[yellow]⚠ mitmproxy CA certificate not found.[/]\n"
+            "  Run 'lli config --cert-help' for installation instructions.\n"
+            "  The certificate will be generated on first run.\n"
+        )
+
+    # Create router and assembler
+    session_router = SessionRouter(base_dir=Path(output_dir))
+    exchange_assembler = ExchangeAssembler()
+
+    # Launch UI server unless disabled
+    if not no_ui:
+        from lli.server import run_server
+        if _is_port_in_use(ui_host, ui_port):
+            ui_url = f"http://{reachable_host_for_listen_host(ui_host)}:{ui_port}"
+            console.print(Panel(f"Port {ui_port} is already in use.\nAssuming the UI is running at [bold link={ui_url}]{ui_url}[/].\nUse '--no-ui' to silence this message.", title="[bold yellow]Web UI Already Running[/]", border_style="yellow"))
+        else:
+            server_thread = threading.Thread(target=run_server, args=(Path(output_dir),), kwargs={"host": ui_host, "port": ui_port}, daemon=True)
+            server_thread.start()
+            ui_url = f"http://{reachable_host_for_listen_host(ui_host)}:{ui_port}"
+            console.print(Panel(f"Analyze sessions at: [bold link={ui_url}]{ui_url}[/]", title="[bold green]Web UI Available[/]", border_style="green"))
+
+    # Display startup info
+    _display_watch_banner(config.proxy.host, config.proxy.port, output_dir, config)
+
+    stop_event = threading.Event()
+    def run_proxy_in_thread() -> None:
+        from lli.proxy import run_watch_proxy
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(run_watch_proxy(config, session_router, exchange_assembler))
+        except Exception as e:
+            if not stop_event.is_set():
+                console.print(f"[red]Proxy error:[/] {e}")
+        finally:
+            loop.close()
+
+    proxy_thread = threading.Thread(target=run_proxy_in_thread, daemon=True)
+    proxy_thread.start()
+
+    try:
+        import time
+        console.print("[green]Service running. Press Ctrl+C to stop.[/]")
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        console.print("\n[cyan]Service stopped.[/]")
+    finally:
+        stop_event.set()
 def _show_cert_help() -> None:
     """Display certificate installation instructions."""
     cert_info = get_cert_info()
@@ -356,48 +448,22 @@ def _show_config(config_path: str | None) -> None:
     console.print(f"  Sensitive headers: {', '.join(config.masking.sensitive_headers)}")
 
 
-@main.command()
-@click.argument("file", type=click.Path(exists=True))
-def stats(file: str) -> None:
-    """
-    Display statistics for a captured trace file.
-
-    Example:
-
-        lli stats my_trace.jsonl
-    """
-    setup_logger("INFO")
-
-    counts = count_records(file)
-
-    table = Table(title=f"Statistics for {file}")
-    table.add_column("Record Type", style="cyan")
-    table.add_column("Count", style="green", justify="right")
-
-    total = 0
-    for record_type, count in sorted(counts.items()):
-        table.add_row(record_type, str(count))
-        total += count
-
-    table.add_row("─" * 20, "─" * 10)
-    table.add_row("[bold]Total[/]", f"[bold]{total}[/]")
-
-    console.print(table)
-
-
-@main.command()
 @click.option(
+    "--proxy-host",
+    "-ph",
+    default="127.0.0.1",
+    show_default=True,
+    help="Proxy server host/interface (use 0.0.0.0 to listen on all interfaces)",
+)
+@click.option(
+    "--proxy-port",
+    "-pp",
     "--port",
     "-p",
     type=int,
     default=9090,
     show_default=True,
     help="Proxy server port (default: 9090)",
-)
-@click.option(
-    "--lan",
-    is_flag=True,
-    help="Listen on the LAN (bind proxy to 0.0.0.0) and print a reachable LAN IP.",
 )
 @click.option(
     "--output-dir",
@@ -428,23 +494,23 @@ def stats(file: str) -> None:
     help="Enable debug mode with verbose logging",
 )
 @click.option(
-    "--ui",
+    "--no-ui",
     is_flag=True,
-    default=True,
-    help="Launch the web UI (default: True)",
+    default=False,
+    help="Disable the web UI server (default: False)",
 )
 @click.option(
     "--ui-host",
     default="127.0.0.1",
     show_default=True,
-    help="Host interface for the web UI (use 0.0.0.0 to expose on the network)",
+    help="Web UI host interface (use 0.0.0.0 to expose on the network)",
 )
 @click.option(
     "--ui-port",
     default=8000,
     show_default=True,
     type=int,
-    help="Port for the web UI",
+    help="Web UI port",
 )
 @click.option(
     "--upstream-ca-cert",
@@ -455,34 +521,33 @@ def stats(file: str) -> None:
 @click.pass_context
 def watch(
     ctx: click.Context,
-    port: int,
-    lan: bool,
+    proxy_host: str,
+    proxy_port: int,
     output_dir: str,
     include: tuple[str, ...],
     exclude: tuple[str, ...],
     debug: bool,
-    ui: bool,
+    no_ui: bool,
     ui_host: str,
     ui_port: int,
     upstream_ca_cert: str | None,
 ) -> None:
     """
-    Start watch mode for continuous session capture.
+    Start the long-running service for continuous session capture.
 
-    Watch mode provides an interactive interface to capture multiple
-    coding sessions. Press Enter to start/stop processing a session.
-    While recording, press Esc to cancel the current session.
-
-    State Machine:
-      - IDLE: Traffic is captured but not assigned to a session
-      - RECORDING: Traffic is captured with session ID injection
-      - PROCESSING: Session data is extracted, merged, and split
+    This starts a background proxy service that automatically manages
+    sessions, routing traffic by client identity and message continuity.
+    Sessions persist and update in real-time as traffic flows.
 
     Examples:
 
         lli watch
 
-        lli watch --port 9090 --output-dir ./my_traces
+        lli watch --proxy-port 8888 --output-dir ./my_traces
+
+        lli watch --proxy-host 0.0.0.0 --proxy-port 9090
+
+        lli watch --ui-host 0.0.0.0 --ui-port 8080
 
         lli watch --include "*my-custom-api.com*"
 
@@ -490,7 +555,9 @@ def watch(
 
         lli watch --upstream-ca-cert /path/to/corporate-ca.pem
 
-    Configure your target application to use this proxy (replace the port as needed):
+        lli watch --no-ui
+
+    Configure your target application to use this proxy (replace the host/port as needed):
 
         export HTTP_PROXY=http://127.0.0.1:9090
 
@@ -504,20 +571,13 @@ def watch(
     # Load configuration
     config = load_config(ctx.obj.get("config_path"))
 
-    # Apply CLI overrides only when explicitly provided
-    port_source = ctx.get_parameter_source("port")
-    if port_source == click.core.ParameterSource.DEFAULT:
-        port = config.proxy.port
-    else:
-        config.proxy.port = port
+    # CLI override for proxy host (explicit --proxy-host overrides config/env)
+    if proxy_host != "127.0.0.1":
+        config.proxy.host = proxy_host
 
-    # Apply proxy host rules:
-    # - With --lan: bind to all interfaces (0.0.0.0) and show LAN IP in help text.
-    # - Without --lan: always default to loopback (127.0.0.1) as requested.
-    if lan:
-        config.proxy.host = "0.0.0.0"
-    else:
-        config.proxy.host = "127.0.0.1"
+    # CLI override for proxy port (explicit --proxy-port overrides config/env)
+    if proxy_port != 9090:
+        config.proxy.port = proxy_port
 
     # CLI override for upstream CA cert (explicit --upstream-ca-cert overrides config/env)
     if upstream_ca_cert is not None:
@@ -559,8 +619,8 @@ def watch(
     session_router = SessionRouter(base_dir=Path(output_dir))
     exchange_assembler = ExchangeAssembler()
 
-    # Launch UI server if requested
-    if ui:
+    # Launch UI server unless disabled
+    if not no_ui:
         from lli.server import run_server
         if _is_port_in_use(ui_host, ui_port):
             ui_url = f"http://{reachable_host_for_listen_host(ui_host)}:{ui_port}"
@@ -572,7 +632,7 @@ def watch(
             console.print(Panel(f"Analyze sessions at: [bold link={ui_url}]{ui_url}[/]", title="[bold green]Web UI Available[/]", border_style="green"))
 
     # Display startup info
-    _display_watch_banner(port, output_dir, config, lan=lan)
+    _display_watch_banner(config.proxy.host, config.proxy.port, output_dir, config)
 
     stop_event = threading.Event()
     def run_proxy_in_thread() -> None:
@@ -601,21 +661,22 @@ def watch(
         stop_event.set()
 
 def _display_watch_banner(
-    port: int,
+    proxy_host: str,
+    proxy_port: int,
     output_dir: str,
     config: LLIConfig,
-    lan: bool = False,
 ) -> None:
     """Display the watch mode startup banner."""
     console.print()
     console.print(
         Panel.fit(
-            "[bold cyan]LLI Watch Mode[/]\n[dim]Continuous Capture Interface[/]",
+            "[bold cyan]LLI Long-Running Service[/]\n[dim]Automatic Session Management[/]",
             border_style="cyan",
         )
     )
     console.print()
-    console.print(f"  [cyan]Proxy Port:[/]    {port}")
+    console.print(f"  [cyan]Proxy Host:[/]    {proxy_host}")
+    console.print(f"  [cyan]Proxy Port:[/]    {proxy_port}")
     console.print(f"  [cyan]Output Dir:[/]    {output_dir}")
     if config.proxy.upstream_ca_cert:
         ca_path = Path(config.proxy.upstream_ca_cert)
@@ -627,13 +688,8 @@ def _display_watch_banner(
     _display_filter_rules(config)
 
     console.print("[dim]Configure your application:[/]")
-    if lan:
-        detected = detect_primary_ipv4() or "<your_lan_ip>"
-        console.print(f"  export HTTP_PROXY=http://{detected}:{port}")
-        console.print(f"  export HTTPS_PROXY=http://{detected}:{port}")
-    else:
-        console.print(f"  export HTTP_PROXY=http://127.0.0.1:{port}")
-        console.print(f"  export HTTPS_PROXY=http://127.0.0.1:{port}")
+    console.print(f"  export HTTP_PROXY=http://{proxy_host}:{proxy_port}")
+    console.print(f"  export HTTPS_PROXY=http://{proxy_host}:{proxy_port}")
     if config.proxy.no_proxy:
         console.print(f"  export NO_PROXY={','.join(config.proxy.no_proxy)}")
     console.print("  export NODE_EXTRA_CA_CERTS=~/.mitmproxy/mitmproxy-ca-cert.pem")

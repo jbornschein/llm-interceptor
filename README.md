@@ -1,4 +1,4 @@
-# LLM Interceptor (LLI) - Long-Running Service Fork
+# LLM Interceptor (LLI)
 
 <p align="center">
   <strong>🔍 Proxy-layer microscope for LLM traffic analysis</strong>
@@ -9,27 +9,23 @@
 </p>
 
 <p align="center">
-  <strong>🔥 This fork transforms LLI into a non-interactive, background service with automatic session routing and assembly</strong>
+  <strong>⚡ Long-running background service with automatic session management</strong>
 </p>
 
 ---
 
 ![LLI Web UI](lli-ui-screenshot.png)
 
-## 🚀 What's Different
-
-### Original LLI (by chouzz)
-- **CLI tool** with interactive watch mode
-- Requires manual `Enter` to start/stop sessions
-- Sessions are processed after you manually stop them
-- Global log file for all traffic
-
-### This Fork (Long-Running Service)
-- **Background service** - runs continuously without user interaction
-- **Automatic session routing** - groups requests by client identity and message continuity
-- **Eternal sessions** - sessions persist and update in real-time as traffic flows
-- **Fork detection** - automatically creates new sessions when conversation branches
-- **No manual session management** - sessions are created and updated automatically
+> 💡 **About this fork**
+> 
+> This is a fork of the original [LLM Interceptor](https://github.com/chouzz/llm-interceptor) project by @chouzz, transformed into a long-running background service. The original project remains active and may have different features or architecture.
+> 
+> **Key differences:**
+> - **Non-interactive**: No manual `Enter` to start/stop sessions
+> - **Automatic routing**: Groups requests by client identity and message continuity
+> - **Real-time sessions**: Sessions persist and update as traffic flows
+> - **Fork detection**: Creates new sessions when conversations diverge
+> - **CLI cleanup**: Only `watch` mode is primary; other commands are deprecated
 
 ## ✨ Features
 
@@ -213,33 +209,47 @@ Service running. Press Ctrl+C to stop.
 
 ### `lli watch`
 
-Start the long-running proxy service (non-interactive, continuous capture).
+Starts the long-running proxy service for automatic LLM traffic capture.
+
+The service runs continuously in the background, automatically creating and
+managing sessions as LLM traffic flows. No manual session management required.
 
 ```bash
 lli watch [OPTIONS]
 
 Options:
-  -p, --port INTEGER           Proxy server port (default: 9090)
-  -o, --output-dir, --log-dir PATH  Root output directory (default: ./traces or OS log dir)
-  -i, --include TEXT           Additional URL patterns to include (glob pattern)
-  --upstream-ca-cert PATH      Path to PEM or CA bundle for trusting upstream (e.g. corporate proxy) certificates
-  --no-ui                      Disable web UI server
-  --ui-host TEXT               Web UI host (default: 127.0.0.1)
-  --ui-port INTEGER            Web UI port (default: 8000)
+  --proxy-host, -ph            Proxy server host/interface (default: 127.0.0.1)
+  --proxy-port, -pp, -p        Proxy server port (default: 9090)
+  -o, --output-dir, --log-dir  Root output directory (default: ./traces or OS log dir)
+  -i, --include                Additional URL patterns to include (glob pattern)
+  -x, --exclude                URL patterns to exclude (glob)
   --debug                      Enable debug mode with verbose logging
+  --no-ui                      Disable web UI server
+  --ui-host                    Web UI host (default: 127.0.0.1)
+  --ui-port                    Web UI port (default: 8000)
+  --upstream-ca-cert           Path to PEM or CA bundle for trusting upstream certificates
 ```
 
 **Examples:**
 
 ```bash
-# Basic long-running service
+# Basic long-running service (loopback only)
 lli watch
 
+# Listen on all interfaces
+lli watch --proxy-host 0.0.0.0
+
 # Custom port and output directory
-lli watch --port 8888 --output-dir ./my_traces
+lli watch --proxy-port 8888 --output-dir ./my_traces
+
+# Custom UI port
+lli watch --ui-port 8080
 
 # Include custom API endpoint (glob pattern)
 lli watch --include "*my-custom-api.com*"
+
+# Exclude health check endpoints
+lli watch --exclude "*health*" --exclude "*metrics*"
 
 # Corporate network: trust company CA so upstream TLS (proxy/target) is verified
 lli watch --upstream-ca-cert /path/to/corporate-ca.pem
@@ -250,7 +260,7 @@ lli watch --no-ui
 
 ### `lli config`
 
-Display configuration and setup help.
+Displays configuration and setup help.
 
 ```bash
 lli config --cert-help    # Certificate installation instructions
