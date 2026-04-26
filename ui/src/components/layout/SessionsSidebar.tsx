@@ -311,6 +311,13 @@ const SessionItem = React.memo<{
               <Clock size={10} />
               <span>{formatDuration(session.duration_ms)}</span>
             </div>
+            {/* Token count badge */}
+            {(session.total_prompt_tokens > 0 || session.total_generated_tokens > 0) && (
+              <div className="text-[10px] text-cyan-600 dark:text-cyan-400 mt-1 flex items-center gap-2">
+                <span className="font-mono">{session.total_prompt_tokens.toLocaleString()} prompt</span>
+                <span className="font-mono">{session.total_generated_tokens.toLocaleString()} gen</span>
+              </div>
+            )}
 
             {/* Note Section - inside the card */}
             {!isEditing && hasNote && (

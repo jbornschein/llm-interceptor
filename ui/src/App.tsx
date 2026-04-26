@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { EmptyState } from './components/layout/EmptyState';
 import { ExchangeDetailsPane } from './components/layout/ExchangeDetailsPane';
+import { SessionHeader } from './components/layout/SessionHeader';
 import { MemoizedRequestsPane } from './components/layout/RequestsPane';
 import { SessionsSidebar } from './components/layout/SessionsSidebar';
 import { useAnnotations } from './hooks/useAnnotations';
@@ -97,6 +98,9 @@ const App: React.FC = () => {
         />
       ) : (
         <>
+          {/* Session Header - only shown when a session is selected */}
+          {currentSession && <SessionHeader session={currentSession} />}
+
           <SessionsSidebar
             width={sessionsWidth}
             isCollapsed={isSessionsCollapsed}

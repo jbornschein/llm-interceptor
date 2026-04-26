@@ -43,6 +43,8 @@ class SessionSummary(BaseModel):
     request_count: int
     total_latency_ms: float
     total_tokens: int
+    total_prompt_tokens: int = 0  # Sum of message counts in requests
+    total_generated_tokens: int = 0  # Sum of output_tokens from responses
     duration_ms: int = 0
     failed_count: int = 0
 
@@ -68,6 +70,7 @@ class ExchangeSummary(BaseModel):
     model: str = "unknown-model"
     system_prompt_key: str = ""
     usage: UsageMetrics | None = None
+    prompt_token_count: int = 0  # Number of messages in the request
     has_response: bool = False
     tool_names: list[str] = []
 
@@ -415,6 +418,7 @@ def _empty_exchange_summary(sequence_id: str) -> ExchangeSummary:
         model="unknown-model",
         system_prompt_key="",
         usage=None,
+        prompt_token_count=0,
         has_response=False,
         tool_names=[],
     )
@@ -438,6 +442,8 @@ def _build_session_cache_entry(session_dir: Path) -> SessionCacheEntry:
     request_count = 0
     total_latency_ms = 0.0
     total_tokens = 0
+    total_prompt_tokens = 0  # Sum of message counts
+    total_generated_tokens = 0  # Sum of output_tokens
     failed_count = 0
     earliest_timestamp: datetime | None = _read_session_metadata_timestamp(session_dir)
     latest_timestamp: datetime | None = None
@@ -534,6 +540,13 @@ def _build_session_cache_entry(session_dir: Path) -> SessionCacheEntry:
                 total_tokens += request_usage.total_tokens
                 summary.usage = request_usage
 
+            # Count messages in request body for prompt token count
+            if isinstance(body, dict):
+                messages = body.get("messages")
+                if isinstance(messages, list):
+                    summary.prompt_token_count = len(messages)
+                    total_prompt_tokens += len(messages)
+
         else:
             pair_entry.response_path = file_path
             summary.has_response = True
@@ -558,11 +571,10 @@ def _build_session_cache_entry(session_dir: Path) -> SessionCacheEntry:
                     # Response usage supersedes request usage to avoid double-counting
                     total_tokens -= (request_usage.total_tokens if request_usage is not None else 0)
                     total_tokens += usage.total_tokens
+                    # Count generated tokens (output_tokens) from response
+                    generated_tokens = usage.output_tokens
                     summary.usage = usage
-
-                for name in _extract_response_tool_names(body):
-                    if name not in summary.tool_names:
-                        summary.tool_names.append(name)
+                    total_generated_tokens += generated_tokens
 
         if not summary.timestamp:
             summary.timestamp = payload.get("timestamp", "")
@@ -598,6 +610,8 @@ def _build_session_cache_entry(session_dir: Path) -> SessionCacheEntry:
         request_count=request_count,
         total_latency_ms=total_latency_ms,
         total_tokens=total_tokens,
+        total_prompt_tokens=total_prompt_tokens,
+        total_generated_tokens=total_generated_tokens,
         duration_ms=duration_ms,
         failed_count=failed_count,
     )
