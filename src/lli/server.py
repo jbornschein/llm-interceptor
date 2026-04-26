@@ -137,7 +137,6 @@ class SessionCacheEntry:
     pairs: dict[str, SessionPairCache]
 
 
-SESSION_ID_TIMESTAMP_RE = re.compile(r"^session_(\d{8}_\d{6})(?:_\d+)?$")
 SESSION_ID_TIMESTAMP_RE_NEW = re.compile(r"^session-(\d{8}-T\d{6})-[a-f0-9]{8}$")
 SPLIT_FILE_TIMESTAMP_RE = re.compile(
     r"^\d+_(?:request|response)_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\.json$"
@@ -159,14 +158,6 @@ def _parse_iso_datetime(value: object) -> datetime | None:
 
 def _parse_session_timestamp(session_id: str) -> datetime | None:
     """Parse timestamps from session directory names."""
-    match = SESSION_ID_TIMESTAMP_RE.match(session_id)
-    if match:
-        try:
-            return datetime.strptime(match.group(1), "%Y%m%d_%H%M%S")
-        except ValueError:
-            return None
-    
-    # New format: session-YYYYMMDD-THHmmss-uuid
     match = SESSION_ID_TIMESTAMP_RE_NEW.match(session_id)
     if match:
         try:
