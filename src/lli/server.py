@@ -138,6 +138,7 @@ class SessionCacheEntry:
 
 
 SESSION_ID_TIMESTAMP_RE = re.compile(r"^session_(\d{8}_\d{6})(?:_\d+)?$")
+SESSION_ID_TIMESTAMP_RE_NEW = re.compile(r"^session-(\d{8}-T\d{6})-[a-f0-9]{8}$")
 SPLIT_FILE_TIMESTAMP_RE = re.compile(
     r"^\d+_(?:request|response)_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\.json$"
 )
@@ -677,15 +678,19 @@ def _is_session_dir(path: Path) -> bool:
     if _parse_session_timestamp(path.name) is not None:
         return True
 
+    # Check new format (session-YYYYMMDD-THHmmss-uuid)
+    if SESSION_ID_TIMESTAMP_RE_NEW.match(path.name) is not None:
+        return True
+
     return any(path.glob("*.json"))
 
 
 def _validate_session_id(session_id: str) -> None:
     """Validate session_id to prevent path traversal attacks.
 
-    Session IDs must match the expected format: session_YYYYMMDD_HHMMSS
+    Session IDs must match the expected format: session_YYYYMMDD_HHMMSS or session-YYYYMMDD-T HHMMSS-uuid
     """
-    if not _parse_session_timestamp(session_id):
+    if not (_parse_session_timestamp(session_id) or SESSION_ID_TIMESTAMP_RE_NEW.match(session_id)):
         raise HTTPException(status_code=400, detail="Invalid session ID format")
 
 
