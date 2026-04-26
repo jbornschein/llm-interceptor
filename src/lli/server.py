@@ -158,15 +158,23 @@ def _parse_iso_datetime(value: object) -> datetime | None:
 
 
 def _parse_session_timestamp(session_id: str) -> datetime | None:
-    """Parse timestamps from session directory names, including collision suffixes."""
+    """Parse timestamps from session directory names."""
     match = SESSION_ID_TIMESTAMP_RE.match(session_id)
-    if not match:
-        return None
-
-    try:
-        return datetime.strptime(match.group(1), "%Y%m%d_%H%M%S")
-    except ValueError:
-        return None
+    if match:
+        try:
+            return datetime.strptime(match.group(1), "%Y%m%d_%H%M%S")
+        except ValueError:
+            return None
+    
+    # New format: session-YYYYMMDD-THHmmss-uuid
+    match = SESSION_ID_TIMESTAMP_RE_NEW.match(session_id)
+    if match:
+        try:
+            return datetime.strptime(match.group(1), "%Y%m%d-T%H%M%S")
+        except ValueError:
+            return None
+    
+    return None
 
 
 def _parse_split_filename_timestamp(filename: str) -> datetime | None:
@@ -675,22 +683,16 @@ def _is_session_dir(path: Path) -> bool:
     if (path / SESSION_METADATA_FILE).exists() or (path / SESSION_ANNOTATIONS_FILE).exists():
         return True
 
-    if _parse_session_timestamp(path.name) is not None:
-        return True
-
-    # Check new format (session-YYYYMMDD-THHmmss-uuid)
-    if SESSION_ID_TIMESTAMP_RE_NEW.match(path.name) is not None:
-        return True
-
-    return any(path.glob("*.json"))
+    # Check old format (session_YYYYMMDD_HHmmss) or new format (session-YYYYMMDD-THHmmss-uuid)
+    return _parse_session_timestamp(path.name) is not None
 
 
 def _validate_session_id(session_id: str) -> None:
     """Validate session_id to prevent path traversal attacks.
 
-    Session IDs must match the expected format: session_YYYYMMDD_HHMMSS or session-YYYYMMDD-T HHMMSS-uuid
+    Session IDs must match the expected format: session-YYYYMMDD-THHmmss-uuid
     """
-    if not (_parse_session_timestamp(session_id) or SESSION_ID_TIMESTAMP_RE_NEW.match(session_id)):
+    if not _parse_session_timestamp(session_id):
         raise HTTPException(status_code=400, detail="Invalid session ID format")
 
 
