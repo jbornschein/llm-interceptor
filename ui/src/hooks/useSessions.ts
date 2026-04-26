@@ -20,6 +20,8 @@ export function useSessions(options: { apiBase: string; pollMs?: number; isNewes
   const exchangeRequestRef = useRef(0);
   const sessionAbortRef = useRef<AbortController | null>(null);
   const exchangeAbortRef = useRef<AbortController | null>(null);
+  const silentRefreshRequestRef = useRef(0);
+  const silentRefreshAbortRef = useRef<AbortController | null>(null);
 
   const fetchWatchStatus = useCallback(async () => {
     try {
@@ -97,6 +99,25 @@ export function useSessions(options: { apiBase: string; pollMs?: number; isNewes
       if (requestId === sessionRequestRef.current) {
         setIsLoadingSession(false);
       }
+    }
+  }, [apiBase]);
+
+  const silentRefreshSession = useCallback(async (sessionId: string) => {
+    silentRefreshAbortRef.current?.abort();
+    const requestId = silentRefreshRequestRef.current + 1;
+    silentRefreshRequestRef.current = requestId;
+    const controller = new AbortController();
+    silentRefreshAbortRef.current = controller;
+    try {
+      const res = await fetch(`${apiBase}/api/sessions/${sessionId}`, { signal: controller.signal });
+      if (!res.ok) return;
+      const data = await res.json();
+      const session = normalizeSessionOverview(data);
+      if (requestId !== silentRefreshRequestRef.current) return;
+      setCurrentSession(session);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      console.error('Failed to refresh session', error);
     }
   }, [apiBase]);
 
@@ -210,6 +231,15 @@ export function useSessions(options: { apiBase: string; pollMs?: number; isNewes
     }
   }, [fetchSessionDetails, selectedSessionId]);
 
+  // Auto-refresh current session when the poll detects new exchanges
+  useEffect(() => {
+    if (!selectedSessionId || !currentSession || isLoadingSession) return;
+    const listed = sessionList.find((s) => s.id === selectedSessionId);
+    if (listed && listed.request_count !== currentSession.exchanges.length) {
+      void silentRefreshSession(selectedSessionId);
+    }
+  }, [sessionList, currentSession, selectedSessionId, isLoadingSession, silentRefreshSession]);
+
   useEffect(() => {
     if (!selectedSessionId || !selectedExchangeId || !currentSession) return;
 
@@ -244,6 +274,7 @@ export function useSessions(options: { apiBase: string; pollMs?: number; isNewes
     return () => {
       sessionAbortRef.current?.abort();
       exchangeAbortRef.current?.abort();
+      silentRefreshAbortRef.current?.abort();
     };
   }, []);
 
