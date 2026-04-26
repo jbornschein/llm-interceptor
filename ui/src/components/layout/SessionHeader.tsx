@@ -1,17 +1,16 @@
 import React from 'react';
-import type { Session } from '../types';
-import { formatDuration } from '../utils';
+import type { Session } from '../../types';
 
 export const SessionHeader: React.FC<{
   session: Session;
 }> = ({ session }) => {
   // Calculate totals from exchanges
   const totalPromptTokens = React.useMemo(() => {
-    return session.exchanges.reduce((sum, ex) => sum + (ex.promptTokenCount || 0), 0);
+    return session.exchanges.reduce((sum: number, ex) => sum + (ex.promptTokenCount || 0), 0);
   }, [session.exchanges]);
 
   const totalGeneratedTokens = React.useMemo(() => {
-    return session.exchanges.reduce((sum, ex) => {
+    return session.exchanges.reduce((sum: number, ex) => {
       if (ex.usage && ex.usage.output_tokens !== undefined) {
         return sum + ex.usage.output_tokens;
       }
