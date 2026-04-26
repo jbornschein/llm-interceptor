@@ -15,7 +15,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { AnnotationData, SessionSummary } from '../../types';
-import { formatDuration, formatTimestamp } from '../../utils';
+import { formatDuration, formatSessionLabel } from '../../utils';
 import { Tooltip } from '../common/Tooltip';
 
 export const SessionsSidebar: React.FC<{
@@ -298,8 +298,8 @@ const SessionItem = React.memo<{
                       : 'text-slate-400 dark:text-slate-600'
                   }
                 />
-                <span className="font-semibold truncate max-w-[120px] text-slate-700 dark:text-slate-200" title={session.id}>
-                  {session.id.replace('session_', '')}
+                <span className="font-semibold truncate max-w-[160px] text-slate-700 dark:text-slate-200" title={session.id}>
+                  {formatSessionLabel(session.timestamp)}
                 </span>
               </div>
               <div className="flex items-center gap-1 text-xs text-slate-400 dark:text-slate-500">
@@ -307,10 +307,7 @@ const SessionItem = React.memo<{
                 {hasNote && !isEditing && <MessageCircle size={10} className="text-amber-500" />}
               </div>
             </div>
-            <div className="text-xs text-slate-400 dark:text-slate-500">
-              {formatTimestamp(session.timestamp)}
-            </div>
-            <div className="text-xs text-slate-400 dark:text-slate-500 flex items-center gap-1 mt-0.5">
+            <div className="text-xs text-slate-400 dark:text-slate-500 flex items-center gap-1">
               <Clock size={10} />
               <span>{formatDuration(session.duration_ms)}</span>
             </div>

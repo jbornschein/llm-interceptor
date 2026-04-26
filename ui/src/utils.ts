@@ -439,6 +439,16 @@ export const formatTimestamp = (iso: string) => {
   }
 };
 
+export const formatSessionLabel = (iso: string) => {
+  if (!iso) return 'Unknown';
+  try {
+    const date = new Date(iso);
+    return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return iso;
+  }
+};
+
 export const formatDuration = (ms: number) => {
   if (!Number.isFinite(ms) || ms <= 0) return '0s';
 
