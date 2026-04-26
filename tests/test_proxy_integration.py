@@ -68,7 +68,7 @@ def test_proxy_addon_routes_request_to_session(tmp_path: Path) -> None:
     addon.request(flow)
 
     # Verify session was created and request was written
-    session_dirs = list(tmp_path.glob("session_*"))
+    session_dirs = list(tmp_path.glob("session-*"))
     assert len(session_dirs) == 1
 
     session_dir = session_dirs[0]
@@ -119,5 +119,5 @@ def test_proxy_addon_routes_request_based_on_url_filter(tmp_path: Path) -> None:
     addon.request(flow)
 
     # Verify no session was created
-    session_dirs = list(tmp_path.glob("session_*"))
+    session_dirs = list(tmp_path.glob("session-*"))
     assert len(session_dirs) == 0

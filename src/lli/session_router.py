@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -17,7 +18,7 @@ class ActiveSession:
     system_prompt_hash: str
     client_ip: str | None
     client_id: str | None
-    messages_fingerprint: list[str] = field(default_factory=list)
+    chain_hash: str = ""
     next_sequence_id: int = 1
     last_active: datetime = field(default_factory=datetime.now)
 
@@ -67,6 +68,18 @@ class SessionRouter:
         # But we just hash all messages to keep it simple.
         fingerprints = [self._hash_message(m) for m in messages]
         return fingerprints
+    
+    def _compute_chain_hash(self, system_hash: str, messages_fingerprint: list[str]) -> str:
+        """Compute an incremental hash chain from system prompt and messages."""
+        # Start with system hash
+        current_hash = system_hash
+        
+        # Chain each message fingerprint
+        for msg_fp in messages_fingerprint:
+            combined = current_hash + msg_fp
+            current_hash = hashlib.sha256(combined.encode("utf-8")).hexdigest()
+        
+        return current_hash
 
     def _extract_system_hash(self, body: Any) -> str:
         if not isinstance(body, dict):
@@ -93,100 +106,47 @@ class SessionRouter:
         if explicit_session_id:
             return self._get_or_create_session(explicit_session_id, body=body, client_id=client_id)
             
-        # 2. Check for continuity
+        # 2. Check for continuity using hash chain
         system_hash = self._extract_system_hash(body)
         messages_fingerprint = self._extract_messages_fingerprint(body)
         
-        # The current request usually appends 1 user message, so the prefix of the current
-        # fingerprints should match the active session's fingerprints perfectly.
-        # Let's search active sessions for the best match.
-        
-        best_match = None
-        best_score = 0
-        is_fork = False
-        fork_parent_id = None
+        # Build chain hash incrementally and check for partial matches
+        # This allows matching sessions that have fewer messages
+        current_chain_hash = self._compute_chain_hash(system_hash, [])
         
         for sess_id, sess in self.active_sessions.items():
-            # If client_id is set and mismatch, skip
+            # Check client_id match if set
             if client_id and sess.client_id and client_id != sess.client_id:
                 continue
-                
-            score = 0
-            # Require system prompt to match if there is one
-            if system_hash and sess.system_prompt_hash and system_hash != sess.system_prompt_hash:
-                continue
-            elif system_hash == sess.system_prompt_hash and system_hash:
-                score += 10
-                
-            # Compare message history. If current history starts with session history,
-            # it's a direct continuation.
-            sess_is_fork = False
-            if messages_fingerprint and sess.messages_fingerprint:
-                # Find how many messages match from the beginning
-                match_len = 0
-                min_len = min(len(messages_fingerprint), len(sess.messages_fingerprint))
-                for i in range(min_len):
-                    if messages_fingerprint[i] == sess.messages_fingerprint[i]:
-                        match_len += 1
-                    else:
-                        break
-                        
-                if match_len > 0:
-                    # Very strong match if they share a prefix
-                    score += match_len * 5
-                    
-                    # Exact continuation: current request has the exact same history plus some new messages
-                    if match_len == len(sess.messages_fingerprint):
-                        score += 50
-                    else:
-                        # Fork detection: they share a prefix, but then diverge
-                        # We consider it a fork if it matches at least 2 messages or >50% of history
-                        if match_len >= 2 or match_len >= len(sess.messages_fingerprint) / 2:
-                            score += 20
-                            sess_is_fork = True
             
-            if score > best_score:
-                best_score = score
-                best_match = sess
-                is_fork = sess_is_fork
-                fork_parent_id = sess.id
-
-        # Threshold for continuity
-        if best_match and best_score > 10:
-            if is_fork:
-                # Create a new fork session
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                # Append _fork to parent id (strip existing forks if needed, or just append)
-                base_id = fork_parent_id.split("_fork")[0]
-                new_id = f"{base_id}_fork_{timestamp}"
+            # Check system prompt match
+            if system_hash != sess.system_prompt_hash:
+                continue
+            
+            # Build chain hash incrementally to find matching prefix
+            for i in range(len(messages_fingerprint)):
+                current_chain_hash = self._compute_chain_hash(system_hash, messages_fingerprint[:i+1])
                 
-                counter = 1
-                while new_id in self.active_sessions or (self.base_dir / new_id).exists():
-                    new_id = f"{base_id}_fork_{timestamp}_{counter}"
-                    counter += 1
-                    
-                self._logger.info(f"Detected fork from {fork_parent_id}, created {new_id} (score {best_score})")
-                sess = self._get_or_create_session(new_id, body=body, client_id=client_id)
-                sess.messages_fingerprint = messages_fingerprint
-                return sess
-            else:
-                self._logger.info(f"Routed request to existing session {best_match.id} (score {best_score})")
-                # Update fingerprint to new state
-                best_match.messages_fingerprint = messages_fingerprint
-                best_match.last_active = datetime.now()
-                return best_match
+                # If this partial chain matches an active session, it's a continuation
+                if current_chain_hash == sess.chain_hash:
+                    self._logger.info(f"Routed request to existing session {sess.id}")
+                    # Update to final chain hash
+                    final_chain_hash = self._compute_chain_hash(system_hash, messages_fingerprint)
+                    sess.chain_hash = final_chain_hash
+                    sess.last_active = datetime.now()
+                    return sess
+        
+        # No match found - create new session
+        
+        self._logger.info("No matching session found, creating new session")
 
         # 3. Create new session
-        # Generate new ID
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        new_id = f"session_{timestamp}"
+        # Generate new ID with UUID to avoid collisions
+        # Format: session-20260426-T172830-4f512e81 (date + T + time + uuid)
+        timestamp = datetime.now().strftime("%Y%m%d-T%H%M%S")
+        unique_id = uuid.uuid4().hex[:8]
+        new_id = f"session-{timestamp}-{unique_id}"
         
-        # Handle collision
-        counter = 1
-        while new_id in self.active_sessions or (self.base_dir / new_id).exists():
-            new_id = f"session_{timestamp}_{counter}"
-            counter += 1
-            
         self._logger.info(f"Created new session {new_id}")
         return self._get_or_create_session(new_id, body=body, client_id=client_id)
         
@@ -195,25 +155,28 @@ class SessionRouter:
             dir_path = self.base_dir / session_id
             dir_path.mkdir(parents=True, exist_ok=True)
             
+            # Compute chain hash for new session
+            sys_hash = self._extract_system_hash(body) if body else ""
+            msg_fp = self._extract_messages_fingerprint(body) if body else []
+            chain_hash = self._compute_chain_hash(sys_hash, msg_fp) if msg_fp else sys_hash
+            
             # Write metadata
             meta_path = dir_path / "session_meta.json"
             if not meta_path.exists():
                 meta_path.write_text(json.dumps({
                     "session_id": session_id,
                     "started_at": datetime.now().isoformat(),
-                    "client_id": client_id
+                    "client_id": client_id,
+                    "chain_hash": chain_hash
                 }, indent=2))
                 
-            sys_hash = self._extract_system_hash(body) if body else ""
-            msg_fp = self._extract_messages_fingerprint(body) if body else []
-            
             self.active_sessions[session_id] = ActiveSession(
                 id=session_id,
                 dir_path=dir_path,
                 system_prompt_hash=sys_hash,
                 client_ip=None,
                 client_id=client_id,
-                messages_fingerprint=msg_fp,
+                chain_hash=chain_hash,
                 next_sequence_id=1
             )
         return self.active_sessions[session_id]

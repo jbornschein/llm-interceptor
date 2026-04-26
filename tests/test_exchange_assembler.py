@@ -20,7 +20,7 @@ def test_exchange_assembler_writes_request_file(tmp_path: Path) -> None:
         system_prompt_hash="test-hash",
         client_ip=None,
         client_id=None,
-        messages_fingerprint=[],
+        chain_hash="test-chain-hash",
         next_sequence_id=1,
     )
     
@@ -64,7 +64,7 @@ def test_exchange_assembler_writes_response_file(tmp_path: Path) -> None:
         system_prompt_hash="test-hash",
         client_ip=None,
         client_id=None,
-        messages_fingerprint=[],
+        chain_hash="test-chain-hash",
         next_sequence_id=1,
     )
     
@@ -119,7 +119,7 @@ def test_exchange_assembler_writes_streaming_response(tmp_path: Path) -> None:
         system_prompt_hash="test-hash",
         client_ip=None,
         client_id=None,
-        messages_fingerprint=[],
+        chain_hash="test-chain-hash",
         next_sequence_id=1,
     )
     
@@ -172,7 +172,7 @@ def test_exchange_assembler_sequence_id_incrementing(tmp_path: Path) -> None:
         system_prompt_hash="test-hash",
         client_ip=None,
         client_id=None,
-        messages_fingerprint=[],
+        chain_hash="test-chain-hash",
         next_sequence_id=1,
     )
     

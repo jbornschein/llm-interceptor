@@ -37,7 +37,7 @@ class TestSessionRouterNewSession:
         session = router.route_request(record)
 
         assert session is not None
-        assert session.id.startswith("session_")
+        assert session.id.startswith("session-")
         assert session.dir_path.exists()
         assert session.next_sequence_id == 1
 
@@ -97,7 +97,7 @@ class TestSessionRouterContinuity:
             ],
         )
         session1 = router.route_request(record1)
-        initial_fingerprint = session1.messages_fingerprint.copy()
+        initial_chain = session1.chain_hash
 
         # Second request from same client
         record2 = create_record(
@@ -111,8 +111,9 @@ class TestSessionRouterContinuity:
         session2 = router.route_request(record2)
 
         assert session1.id == session2.id
-        # Fingerprint should be updated to reflect new state
-        assert len(session2.messages_fingerprint) == 3
+        # Chain hash should be updated to reflect new state
+        assert session2.chain_hash != initial_chain
+        assert len(session2.chain_hash) == 64  # SHA256 hex length
 
     def test_session_router_continuity_with_client_id(self, tmp_path: Path) -> None:
         """Requests with matching client_id and message continuity should route to same session."""
