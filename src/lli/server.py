@@ -21,8 +21,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from lli.watch import WatchManager
-
 # Get logger
 logger = logging.getLogger("llm_interceptor.server")
 SESSION_METADATA_FILE = "session_meta.json"
@@ -115,8 +113,8 @@ class WatchStatus(BaseModel):
 class ServerState:
     """Shared state for the API server."""
 
-    def __init__(self, watch_manager: WatchManager):
-        self.watch_manager = watch_manager
+    def __init__(self, output_dir: Path):
+        self.output_dir = output_dir
         self._session_cache: dict[str, SessionCacheEntry] = {}
 
 
@@ -691,10 +689,11 @@ def _validate_session_id(session_id: str) -> None:
         raise HTTPException(status_code=400, detail="Invalid session ID format")
 
 
-def create_app(watch_manager: WatchManager) -> FastAPI:
+def create_app(output_dir: Path) -> FastAPI:
+
     """Create and configure the FastAPI application."""
     app = FastAPI(title="LLM Interceptor API")
-    state = ServerState(watch_manager)
+    state = ServerState(output_dir)
 
     # Enable CORS for development
     app.add_middleware(
@@ -710,23 +709,22 @@ def create_app(watch_manager: WatchManager) -> FastAPI:
     @app.get("/api/status", response_model=WatchStatus)
     def get_status():
         """Get watch-mode status metadata for the UI."""
-        traces_dir = state.watch_manager.output_dir
+        traces_dir = state.output_dir
         has_sessions = False
         if traces_dir.exists():
             has_sessions = any(p.is_dir() for p in traces_dir.glob("session_*"))
 
-        current_session = state.watch_manager.current_session
         return WatchStatus(
             output_dir=str(traces_dir),
             has_sessions=has_sessions,
-            active=current_session is not None,
-            session_id=current_session.session_id if current_session else None,
+            active=True,
+            session_id=None,
         )
 
     @app.get("/api/sessions", response_model=list[SessionSummary])
     def list_sessions():
         """List all captured sessions with mtime-based caching."""
-        traces_dir = state.watch_manager.output_dir
+        traces_dir = state.output_dir
 
         if not traces_dir.exists():
             return []
@@ -758,7 +756,7 @@ def create_app(watch_manager: WatchManager) -> FastAPI:
     def get_session(session_id: str):
         """Get a fast overview for a specific session."""
         _validate_session_id(session_id)
-        session_dir = state.watch_manager.output_dir / session_id
+        session_dir = state.output_dir / session_id
 
         if not session_dir.exists():
             raise HTTPException(status_code=404, detail="Session not found")
@@ -777,7 +775,7 @@ def create_app(watch_manager: WatchManager) -> FastAPI:
     def get_exchange_detail(session_id: str, sequence_id: str):
         """Get the full request/response payload for a single exchange."""
         _validate_session_id(session_id)
-        session_dir = state.watch_manager.output_dir / session_id
+        session_dir = state.output_dir / session_id
 
         if not session_dir.exists():
             raise HTTPException(status_code=404, detail="Session not found")
@@ -802,7 +800,7 @@ def create_app(watch_manager: WatchManager) -> FastAPI:
     def delete_session(session_id: str):
         """Delete a captured session and all local files under it."""
         _validate_session_id(session_id)
-        session_dir = state.watch_manager.output_dir / session_id
+        session_dir = state.output_dir / session_id
 
         if not session_dir.exists() or not session_dir.is_dir():
             raise HTTPException(status_code=404, detail="Session not found")
@@ -818,26 +816,13 @@ def create_app(watch_manager: WatchManager) -> FastAPI:
     @app.get("/api/active")
     async def get_active_session():
         """Get data for the currently active recording session."""
-        current_session = state.watch_manager.current_session
-
-        if not current_session:
-            return {"active": False, "session_id": None, "pairs": []}
-
-        # If recording, we need to extract and merge from the global log on-the-fly
-        # This is a bit complex, for now we'll return basic info
-        # A full implementation would reuse StreamMerger logic here
-
-        return {
-            "active": True,
-            "session_id": current_session.session_id,
-            "pairs": [],  # TODO: Implement real-time merging
-        }
+        return {"active": True, "session_id": None, "pairs": []}
 
     @app.get("/api/sessions/{session_id}/annotations", response_model=AnnotationData)
     def get_annotations(session_id: str):
         """Get annotations for a specific session."""
         _validate_session_id(session_id)
-        session_dir = state.watch_manager.output_dir / session_id
+        session_dir = state.output_dir / session_id
 
         if not session_dir.exists():
             raise HTTPException(status_code=404, detail="Session not found")
@@ -859,7 +844,7 @@ def create_app(watch_manager: WatchManager) -> FastAPI:
     def update_annotations(session_id: str, annotations: AnnotationData):
         """Update annotations for a specific session."""
         _validate_session_id(session_id)
-        session_dir = state.watch_manager.output_dir / session_id
+        session_dir = state.output_dir / session_id
 
         if not session_dir.exists():
             raise HTTPException(status_code=404, detail="Session not found")
@@ -898,11 +883,11 @@ def create_app(watch_manager: WatchManager) -> FastAPI:
     return app
 
 
-def run_server(watch_manager: WatchManager, host: str = "127.0.0.1", port: int = 8000):
+def run_server(output_dir: Path, host: str = "127.0.0.1", port: int = 8000):
     """Run the API server."""
     import uvicorn
 
-    app = create_app(watch_manager)
+    app = create_app(output_dir)
 
     # Run uvicorn programmatically
     # In a real CLI tool, we might want to suppress some uvicorn logs

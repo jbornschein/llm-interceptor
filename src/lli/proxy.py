@@ -30,23 +30,22 @@ from lli.logger import (
     log_streaming_progress,
     log_tls_handshake_failure,
 )
-
-if TYPE_CHECKING:
-    from lli.watch import WatchManager
+from lli.session_router import SessionRouter, ActiveSession
+from lli.exchange_assembler import ExchangeAssembler
 
 
 class WatchAddon:
     """
-    mitmproxy addon for watch mode.
+    mitmproxy addon for continuous capturing.
 
-    Writes records through WatchManager for session-aware logging
-    with automatic session ID injection.
+    Routes records through SessionRouter and writes to disk via ExchangeAssembler.
     """
 
     def __init__(
         self,
         config: LLIConfig,
-        watch_manager: WatchManager,
+        session_router: SessionRouter,
+        exchange_assembler: ExchangeAssembler,
         url_filter: URLFilter,
     ):
         """
@@ -54,11 +53,13 @@ class WatchAddon:
 
         Args:
             config: LLI configuration
-            watch_manager: WatchManager instance for session management
+            session_router: Routes requests to active eternal sessions
+            exchange_assembler: Writes requests/responses to disk
             url_filter: URL filter for traffic selection
         """
         self.config = config
-        self.watch_manager = watch_manager
+        self.session_router = session_router
+        self.exchange_assembler = exchange_assembler
         self.url_filter = url_filter
         self.masking_config = config.masking
         self._logger = get_logger()
@@ -66,7 +67,7 @@ class WatchAddon:
         # Track in-flight requests
         self._request_times: dict[int, float] = {}
         self._request_ids: dict[int, str] = {}
-        self._request_sessions: dict[int, str | None] = {}
+        self._request_sessions: dict[int, ActiveSession] = {}
 
     def request(self, flow: http.HTTPFlow) -> None:
         """Handle an outgoing request."""
@@ -91,10 +92,6 @@ class WatchAddon:
             self._logger.debug("URL not matched, skipping: %s", url)
             return
 
-        # Capture current session ID for this request
-        session_id = self.watch_manager.current_session_id
-        self._request_sessions[flow_id] = session_id
-
         # Parse headers (with masking)
         headers = self._mask_headers(dict(flow.request.headers))
 
@@ -116,8 +113,13 @@ class WatchAddon:
             "body": body,
         }
 
-        self.watch_manager.write_record(record, session_id=session_id)
-        self._logger.debug("Captured request %s to %s", request_id[:8], url)
+        # Route the request
+        session = self.session_router.route_request(record)
+        self._request_sessions[flow_id] = session
+
+        # Write to disk
+        self.exchange_assembler.write_request(record, session)
+        self._logger.debug("Captured request %s to %s (Session: %s)", request_id[:8], url, session.id)
 
     def response(self, flow: http.HTTPFlow) -> None:
         """Handle a response."""
@@ -147,8 +149,12 @@ class WatchAddon:
             self._cleanup_flow(flow_id)
             return
 
-        # Use the session ID from the request start
-        session_id = self._request_sessions.get(flow_id)
+        # Use the session from the request start
+        session = self._request_sessions.get(flow_id)
+        if not session:
+            self._logger.warning(f"No session found for flow_id {flow_id}, discarding response.")
+            self._cleanup_flow(flow_id)
+            return
 
         # Check if this is a streaming response
         content_type = flow.response.headers.get("content-type", "")
@@ -166,7 +172,7 @@ class WatchAddon:
             # For streaming SSE responses, parse the complete body into chunks
             sse_events = self._parse_sse_body(flow.response.content)
 
-            # Write individual chunk records for each SSE event
+            chunk_records = []
             for chunk_index, event_content in enumerate(sse_events):
                 chunk_record = {
                     "type": "response_chunk",
@@ -176,18 +182,18 @@ class WatchAddon:
                     "chunk_index": chunk_index,
                     "content": event_content,
                 }
-                self.watch_manager.write_record(chunk_record, session_id=session_id)
-                log_streaming_progress(request_id, chunk_index)
+                chunk_records.append(chunk_record)
 
-            # Write meta record with chunk count
             meta_record = {
                 "type": "response_meta",
                 "request_id": request_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "total_latency_ms": latency_ms,
                 "status_code": status_code,
                 "total_chunks": len(sse_events),
             }
-            self.watch_manager.write_record(meta_record, session_id=session_id)
+
+            self.exchange_assembler.write_streaming_response(request_id, chunk_records, meta_record)
         else:
             # Non-streaming response - capture complete body
             headers = self._mask_headers(dict(flow.response.headers))
@@ -204,7 +210,7 @@ class WatchAddon:
                 "body": body,
                 "latency_ms": latency_ms,
             }
-            self.watch_manager.write_record(record, session_id=session_id)
+            self.exchange_assembler.write_response(record)
 
         # Cleanup
         self._cleanup_flow(flow_id)
@@ -359,14 +365,16 @@ class WatchAddon:
 
 async def run_watch_proxy(
     config: LLIConfig,
-    watch_manager: WatchManager,
+    session_router: SessionRouter,
+    exchange_assembler: ExchangeAssembler,
 ) -> None:
     """
-    Start the mitmproxy server in watch mode.
+    Start the mitmproxy server.
 
     Args:
         config: LLI configuration
-        watch_manager: WatchManager instance for session management
+        session_router: Session routing logic
+        exchange_assembler: Disk writing logic
     """
     logger = get_logger()
     logger.info("Starting watch proxy on %s:%d", config.proxy.host, config.proxy.port)
@@ -382,7 +390,7 @@ async def run_watch_proxy(
     url_filter = URLFilter(config.filter)
 
     # Create watch addon
-    addon = WatchAddon(config, watch_manager, url_filter)
+    addon = WatchAddon(config, session_router, exchange_assembler, url_filter)
 
     # Upstream CA: validate path when set and warn if ssl_insecure is also on
     if config.proxy.upstream_ca_cert:

@@ -498,7 +498,8 @@ def watch(
 
         export NODE_EXTRA_CA_CERTS=~/.mitmproxy/mitmproxy-ca-cert.pem
     """
-    from lli.watch import WatchManager
+    from lli.session_router import SessionRouter
+    from lli.exchange_assembler import ExchangeAssembler
 
     # Load configuration
     config = load_config(ctx.obj.get("config_path"))
@@ -554,97 +555,54 @@ def watch(
             "  The certificate will be generated on first run.\n"
         )
 
-    # Create watch manager
-    watch_manager = WatchManager(output_dir=output_dir, port=port)
+    # Create router and assembler
+    session_router = SessionRouter(base_dir=Path(output_dir))
+    exchange_assembler = ExchangeAssembler()
 
     # Launch UI server if requested
     if ui:
         from lli.server import run_server
-
         if _is_port_in_use(ui_host, ui_port):
             ui_url = f"http://{reachable_host_for_listen_host(ui_host)}:{ui_port}"
-            console.print(
-                Panel(
-                    f"Port {ui_port} is already in use.\n"
-                    f"Assuming the UI is running at [bold link={ui_url}]{ui_url}[/].\n"
-                    "Use '--no-ui' to silence this message.",
-                    title="[bold yellow]Web UI Already Running[/]",
-                    border_style="yellow",
-                )
-            )
+            console.print(Panel(f"Port {ui_port} is already in use.\nAssuming the UI is running at [bold link={ui_url}]{ui_url}[/].\nUse '--no-ui' to silence this message.", title="[bold yellow]Web UI Already Running[/]", border_style="yellow"))
         else:
-            server_thread = threading.Thread(
-                target=run_server,
-                args=(watch_manager,),
-                kwargs={"host": ui_host, "port": ui_port},
-                daemon=True,
-            )
+            server_thread = threading.Thread(target=run_server, args=(Path(output_dir),), kwargs={"host": ui_host, "port": ui_port}, daemon=True)
             server_thread.start()
-
             ui_url = f"http://{reachable_host_for_listen_host(ui_host)}:{ui_port}"
-            console.print(
-                Panel(
-                    f"Analyze sessions at: [bold link={ui_url}]{ui_url}[/]",
-                    title="[bold green]Web UI Available[/]",
-                    border_style="green",
-                )
-            )
+            console.print(Panel(f"Analyze sessions at: [bold link={ui_url}]{ui_url}[/]", title="[bold green]Web UI Available[/]", border_style="green"))
 
     # Display startup info
-    _display_watch_banner(
-        port,
-        output_dir,
-        watch_manager.global_log_path,
-        config,
-        lan=lan,
-    )
+    _display_watch_banner(port, output_dir, config, lan=lan)
 
-    # Initialize watch manager
-    watch_manager.initialize()
-
-    # State for controlling the event loop
     stop_event = threading.Event()
-
     def run_proxy_in_thread() -> None:
-        """Run the proxy in a separate thread."""
         from lli.proxy import run_watch_proxy
-
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(run_watch_proxy(config, watch_manager))
+            loop.run_until_complete(run_watch_proxy(config, session_router, exchange_assembler))
         except Exception as e:
             if not stop_event.is_set():
                 console.print(f"[red]Proxy error:[/] {e}")
         finally:
             loop.close()
 
-    # Start proxy in background thread
     proxy_thread = threading.Thread(target=run_proxy_in_thread, daemon=True)
     proxy_thread.start()
 
     try:
-        # Main interactive loop
-        _run_watch_loop(watch_manager, stop_event)
+        import time
+        console.print("[green]Service running. Press Ctrl+C to stop.[/]")
+        while True:
+            time.sleep(1)
     except KeyboardInterrupt:
-        console.print("\n[cyan]Watch mode stopped.[/]")
+        console.print("\n[cyan]Service stopped.[/]")
     finally:
         stop_event.set()
-        watch_manager.shutdown()
-
-        # Show summary
-        output_path = Path(output_dir)
-        if output_path.exists():
-            session_dirs = [d for d in output_path.iterdir() if d.is_dir() and "session" in d.name]
-            console.print(f"\n[green]Sessions captured:[/] {len(session_dirs)}")
-            console.print(f"[green]Output directory:[/] {output_path.absolute()}")
-            console.print(f"[green]Global log:[/] {watch_manager.global_log_path}")
-
 
 def _display_watch_banner(
     port: int,
     output_dir: str,
-    global_log_path: Path,
     config: LLIConfig,
     lan: bool = False,
 ) -> None:
@@ -659,7 +617,6 @@ def _display_watch_banner(
     console.print()
     console.print(f"  [cyan]Proxy Port:[/]    {port}")
     console.print(f"  [cyan]Output Dir:[/]    {output_dir}")
-    console.print(f"  [cyan]Global Log:[/]    {global_log_path}")
     if config.proxy.upstream_ca_cert:
         ca_path = Path(config.proxy.upstream_ca_cert)
         exists_hint = "[green]exists[/]" if ca_path.exists() else "[yellow]file not found[/]"
@@ -745,206 +702,9 @@ def _glob_to_regex(glob_pattern: str) -> str:
     return s
 
 
-def _run_watch_loop(watch_manager: WatchManager, stop_event: threading.Event) -> None:
-    """Run the main watch mode interaction loop."""
-    from lli.watch import WatchState
 
-    def _recording_status_text(session_id: str) -> str:
-        return (
-            f"[bold red]◉[/] [red][REC][/] Session [bold]{session_id}[/] recording  "
-            f"[dim]Press [Enter] to STOP & PROCESS, [Esc] to CANCEL[/]"
-        )
-
-    while not stop_event.is_set():
-        state = watch_manager.state
-
-        if state == WatchState.IDLE:
-            # Display IDLE status with spinner pinned at bottom
-            idle_status_text = (
-                f"[bold green]●[/] [green][IDLE][/] Monitoring on :{watch_manager.port}  "
-                f"[dim]Press [Enter] to START Session {watch_manager.next_session_id}[/]"
-            )
-
-            with console.status(idle_status_text, spinner="dots", spinner_style="green"):
-                try:
-                    input()
-                except EOFError:
-                    break
-
-            if stop_event.is_set():
-                break
-
-            # Start recording
-            try:
-                session = watch_manager.start_recording()
-                session_id = session.session_id
-
-                console.print(
-                    f"\n[bold green]▶[/] [green][START][/] Session [bold]{session_id}[/] "
-                    f"recording (requests: {session.request_count})"
-                )
-
-                # Display RECORDING status once to avoid spinner refresh noise
-                with console.status(
-                    _recording_status_text(session_id),
-                    spinner="point",
-                    spinner_style="red",
-                ):
-                    try:
-                        key = _wait_for_enter_or_escape()
-                    except EOFError:
-                        break
-
-                if stop_event.is_set():
-                    break
-
-                if key == "escape":
-                    cancelled = watch_manager.cancel_recording()
-                    console.print(
-                        f"\n[bold yellow]✖[/] [yellow][CANCEL][/]"
-                        f" Session [bold]{session_id}[/] cancelled "
-                        f"(requests: {cancelled.request_count})."
-                    )
-                    console.print()
-                else:
-                    # Stop recording and process
-                    session = watch_manager.stop_recording()
-                    console.print(
-                        f"\n[bold yellow]⏳[/] [yellow][BUSY][/] Processing "
-                        f"Session [bold]{session_id}[/] "
-                        f"(requests: {session.request_count})..."
-                    )
-
-                    # Process the session
-                    session_dir = watch_manager.process_session(session)
-                    console.print(f"  [green]✔[/] Saved to [cyan]{session_dir}/[/]")
-                    console.print()
-
-            except RuntimeError as e:
-                console.print(f"[red]Error:[/] {e}")
-
-        elif state == WatchState.RECORDING:
-            # This branch handles the case where we enter the loop already in RECORDING state
-            # (e.g., after an error or unexpected state transition)
-            session_id = (
-                watch_manager.current_session.session_id if watch_manager.current_session else "?"
-            )
-            with console.status(
-                _recording_status_text(session_id),
-                spinner="point",
-                spinner_style="red",
-            ):
-                try:
-                    key = _wait_for_enter_or_escape()
-                except EOFError:
-                    break
-
-            if stop_event.is_set():
-                break
-
-            try:
-                if key == "escape":
-                    cancelled = watch_manager.cancel_recording()
-                    console.print(
-                        f"\n[bold yellow]✖[/] [yellow][CANCEL][/]"
-                        f" Session [bold]{cancelled.session_id}[/] cancelled "
-                        f"(requests: {cancelled.request_count})."
-                    )
-                    console.print()
-                else:
-                    # Stop recording and process
-                    session = watch_manager.stop_recording()
-                    session_id = session.session_id
-                    console.print(
-                        f"\n[bold yellow]⏳[/] [yellow][BUSY][/] Processing "
-                        f"Session [bold]{session_id}[/] "
-                        f"(requests: {session.request_count})..."
-                    )
-
-                    # Process the session
-                    session_dir = watch_manager.process_session(session)
-                    console.print(f"  [green]✔[/] Saved to [cyan]{session_dir}/[/]")
-                    console.print()
-            except RuntimeError as e:
-                console.print(f"[red]Error processing session:[/] {e}")
-
-        elif state == WatchState.PROCESSING:
-            # Wait for processing to complete (should not normally reach here)
-            import time
-
-            time.sleep(0.1)
-
-
-def _wait_for_enter_or_escape(
-    timeout: float | None = None,
-) -> Literal["enter", "escape"] | None:
-    """
-    Wait for a single keypress: Enter or Escape.
-
-    Falls back to line-buffered input when stdin is not a TTY (e.g. piped).
-    """
-    if not sys.stdin.isatty():
-        if timeout is None:
-            input()
-            return "enter"
-        return None
-
-    if sys.platform.startswith("win"):
-        # Windows: use msvcrt for unbuffered key input
-        import msvcrt
-        import time
-
-        if timeout is None:
-            while True:
-                ch = msvcrt.getwch()
-                if ch in ("\r", "\n"):
-                    return "enter"
-                if ch == "\x1b":
-                    return "escape"
-        else:
-            end_time = time.time() + timeout
-            while time.time() < end_time:
-                if msvcrt.kbhit():
-                    ch = msvcrt.getwch()
-                    if ch in ("\r", "\n"):
-                        return "enter"
-                    if ch == "\x1b":
-                        return "escape"
-                time.sleep(0.01)
-            return None
-    else:
-        # POSIX: temporarily switch terminal to raw mode
-        import select
-        import termios
-        import tty
-
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            if timeout is None:
-                while True:
-                    rlist, _, _ = select.select([fd], [], [])
-                    if rlist:
-                        ch = sys.stdin.read(1)
-                        if ch in ("\r", "\n"):
-                            return "enter"
-                        if ch == "\x1b":
-                            return "escape"
-            else:
-                rlist, _, _ = select.select([fd], [], [], timeout)
-                if not rlist:
-                    return None
-                ch = sys.stdin.read(1)
-                if ch in ("\r", "\n"):
-                    return "enter"
-                if ch == "\x1b":
-                    return "escape"
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
-
-    return None
-
+if __name__ == "__main__":
+    main(obj={})
 
 def _is_port_in_use(host: str, port: int) -> bool:
     """Return True if the given host:port combination is already bound."""
@@ -956,6 +716,3 @@ def _is_port_in_use(host: str, port: int) -> bool:
             return True
     return False
 
-
-if __name__ == "__main__":
-    main(obj={})
